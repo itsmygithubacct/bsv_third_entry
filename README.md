@@ -2,11 +2,24 @@
 
 **Agent / on-chain orchestration for deterministic-inference receipts.** This project turns a
 Bonsai inference *receipt* into a Bitcoin SV **Third Entry** by driving the
-[`chain_c`](../chain_c) C CLIs — it is the Python layer that sits between a receipt and the chain.
+[`chain_c`](https://github.com/itsmygithubacct/chain_c) C CLIs — it is the Python layer that sits between a receipt and the chain.
 
 It is engine-agnostic: it needs only a built `chain_c` checkout and the receipt's commitment
-hashes. It is consumed by the larger [`bonsai-notary`](../bonsai-notary) composition, but runs
+hashes. It is consumed by the larger [`bonsai-notary`](https://github.com/itsmygithubacct/bonsai-notary) composition, but runs
 standalone too.
+
+## Get it
+
+```bash
+git clone https://github.com/itsmygithubacct/bsv_third_entry.git
+cd bsv_third_entry
+git clone https://github.com/itsmygithubacct/chain_c.git ../chain_c   # its one dependency
+ln -sfn ../chain_c chain_c                                            # CLIs build under chain_c/build
+bash chain_c/build_chain_c.sh                                         # build the C CLIs (see chain_c/README)
+```
+
+`chain_c` is the only dependency. The `./chain_c` path is env-overridable via `BONSAI_CHAIN_C_DIR`
+(it also falls back to `~/chain_c`) — point it at an existing checkout instead if you have one.
 
 ## What "Third Entry" means
 
@@ -42,7 +55,7 @@ bsv_third_entry/
   engine_run.py      bridge: run a trinote engine's run_bonsai_cli with this backend as --onchain
 bsv-third-entry      launcher -> bsv_third_entry.cli
 bsv-agent            launcher -> bsv_third_entry.agent_cli
-chain_c -> ~/chain_c (symlink; the built CLIs live under chain_c/build)
+chain_c -> ../chain_c (symlink; the built CLIs live under chain_c/build)
 tests/               pure-stdlib unit tests + a real DRY-RUN integration smoke
 ```
 
