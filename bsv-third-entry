@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# bsv-third-entry — publish a BSV Third Entry for a receipt via chain_c (DRY-RUN by default).
+# Thin wrapper over bsv_third_entry.cli. Needs a built chain_c (BONSAI_CHAIN_C_DIR or ./chain_c).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export BONSAI_NOTARY_HOME="${BONSAI_NOTARY_HOME:-$HOME/.local/trinote}"
+PY="${BSV_PYTHON:-python3}"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+cd "$ROOT"
+exec "$PY" -m bsv_third_entry.cli "$@"

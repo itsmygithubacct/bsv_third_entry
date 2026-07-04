@@ -1,0 +1,8 @@
+# bsv_third_entry — runtime dependencies.
+#
+# The orchestration itself is PURE PYTHON STDLIB (subprocess + json + re): it only shells the
+# chain_c CLIs, so there is nothing to install to run it. The on-chain software (chain_c) is C,
+# built separately with cmake — NOT a pip dependency.
+#
+# Tests need pytest only:
+#   uv venv && uv pip install -r requirements-dev.txt

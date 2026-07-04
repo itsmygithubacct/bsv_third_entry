@@ -1,0 +1,28 @@
+# --- the chain_c reference -------------------------------------------------------------------
+# Local symlink to the chain_c checkout (absolute path); must NOT be committed. Becomes a git
+# submodule / fetch step when this is a public repo.
+/chain_c
+
+# --- secrets / generated state (always OUTSIDE the repo, under $BONSAI_NOTARY_HOME) ----------
+.env
+*.wif
+*_bsv.json
+*.key.json
+master_mnemonic*
+# <address>.json HD keyfiles aren't matched by *.key.json — ignore any keys dir, defense-in-depth.
+keys/
+
+# --- python ----------------------------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+.venv_*/
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# --- editor / os -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store

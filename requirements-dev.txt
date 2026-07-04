@@ -1,0 +1,2 @@
+# bsv_third_entry — dev/test dependencies (managed via uv only; never raw pip).
+pytest==9.1.1

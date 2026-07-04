@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# bsv-agent — resumable AgentTea identity lifecycle (deploy / action / revoke / status) via chain_c/build/agentd.
+# Thin wrapper over bsv_third_entry.agent_cli. DRY-RUN unless --confirm.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export BONSAI_NOTARY_HOME="${BONSAI_NOTARY_HOME:-$HOME/.local/trinote}"
+PY="${BSV_PYTHON:-python3}"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+cd "$ROOT"
+exec "$PY" -m bsv_third_entry.agent_cli "$@"
