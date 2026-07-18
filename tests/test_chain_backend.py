@@ -12,6 +12,7 @@ Run:  PYTHONPATH=. python3 -m pytest tests/ -q
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -128,6 +129,75 @@ def test_parse_action_record_and_bundle_inputs():
 def test_parse_action_record_rejects_incomplete():
     assert agentd.parse_action_record("DRY RUN — nothing broadcast") is None
     assert agentd.parse_action_record('{"actionTxid":"x"}') is None
+
+
+def test_recover_action_record_from_verified_flat_emission(tmp_path):
+    """Legacy chain_c output becomes a full record only after byte-level/state verification."""
+    agent_key = "02" + "12" * 32
+    counterparty_key = "03" + "34" * 32
+    identity = {
+        "ricardianHash": "ef" * 32,
+        "genesisTxid": "ab" * 32,
+        "agentPubKey": agent_key,
+        "counterpartyPubKey": counterparty_key,
+    }
+    pre_txid, pre_vout, tx_count, amount, lock_time = "aa" * 32, 1, 3, 1000, 1_700_000_000
+    mark = agentd._receipt_mark(
+        identity=identity, amount=amount, action_hash=R_HASH,
+        provenance_hash=M_HASH, tx_count=tx_count, lock_time=lock_time,
+    )
+    # version | one input spending the prior identity | two outputs (state + OP_RETURN) | locktime
+    raw = (
+        bytes.fromhex("01000000") + b"\x01" + bytes.fromhex(pre_txid)[::-1]
+        + pre_vout.to_bytes(4, "little") + b"\x00" + bytes.fromhex("ffffffff")
+        + b"\x02" + (1).to_bytes(8, "little") + b"\x01\x51"
+        + (0).to_bytes(8, "little") + b"\x23\x00\x6a\x20" + bytes.fromhex(mark)
+        + lock_time.to_bytes(4, "little")
+    )
+    raw_hex = raw.hex()
+    txid = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[::-1].hex()
+    pre_state = {
+        **identity, "tip": {"txid": pre_txid, "vout": pre_vout},
+        "state": {"txCount": str(tx_count)},
+    }
+    post_state = {
+        **identity, "tip": {"txid": txid, "vout": 0, "rawTxHex": raw_hex},
+        "state": {"txCount": str(tx_count + 1)},
+    }
+    state_file = tmp_path / "identity.state.json"
+    state_file.write_text(json.dumps(post_state), encoding="utf-8")
+    stdout = (
+        f"action plan: txCount {tx_count} amount {amount} actionHash {R_HASH}\n"
+        f"signed raw tx: {raw_hex}\nBROADCAST OK: {txid}\n"
+    )
+    record = agentd.recover_action_record(
+        stdout, state_file=state_file, pre_state=pre_state, action_txid=txid,
+        expected_action_hash=R_HASH, expected_provenance_hash=M_HASH,
+        expected_amount=amount,
+    )
+    assert record["actionTxid"] == txid
+    assert record["receiptHashOnChain"] == mark
+    assert record["receiptVout"] == 1
+    assert record["identity"] == identity
+    tampered_pre = json.loads(json.dumps(pre_state))
+    tampered_pre["tip"]["txid"] = "bb" * 32
+    with pytest.raises(agentd.ActionRecordRecoveryError, match=r"prior AgentTea tip"):
+        agentd.recover_action_record(
+            stdout, state_file=state_file, pre_state=tampered_pre, action_txid=txid,
+            expected_action_hash=R_HASH, expected_provenance_hash=M_HASH,
+            expected_amount=amount,
+        )
+
+
+def test_recover_action_record_rejects_incomplete_flat_emission(tmp_path):
+    with pytest.raises(agentd.ActionRecordRecoveryError):
+        agentd.recover_action_record(
+            "action plan: txCount 0 amount 1000 actionHash " + R_HASH + "\n",
+            state_file=tmp_path / "missing.json",
+            pre_state={}, action_txid="aa" * 32,
+            expected_action_hash=R_HASH, expected_provenance_hash=M_HASH,
+            expected_amount=1000,
+        )
 
 
 # --- integration smokes (real chain_c, DRY-RUN, never broadcasts) ----------------------------

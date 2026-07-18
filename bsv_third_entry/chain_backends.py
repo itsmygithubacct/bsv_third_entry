@@ -35,7 +35,8 @@ import subprocess
 from pathlib import Path
 
 from . import _parse, paths
-from .agentd import AgentdError, ChainCAgentd
+from .agentd import (ActionRecordRecoveryError, AgentdError, ChainCAgentd,
+                     recover_action_record)
 
 _HEX32 = re.compile(r"\A[0-9a-fA-F]{64}\Z")
 
@@ -149,6 +150,13 @@ class ChainCThirdEntryBackend:
                        broadcast=False, dryRun=True, identity="absent", reason=reason)
             return rec
 
+        # Keep the pre-action state in memory. Legacy chain_c builds do not print a structured
+        # action record, so a successful live run is recovered by proving the signed transaction
+        # advances this exact tip to the post-action state.
+        try:
+            pre_state = json.loads(self.state_file.read_text("utf-8"))
+        except (OSError, ValueError):
+            pre_state = None
         try:
             proc, record = self._agent.action(action_hash=action_hash,
                                               provenance_hash=provenance_hash, amount=self.amount)
@@ -178,6 +186,18 @@ class ChainCThirdEntryBackend:
                 "retrying — do NOT auto-retry, as re-running may double-spend.\n"
                 f"agentd stdout:\n{out.strip()}")
         rec.update(txid=txid, status="broadcast", broadcast=True)
+        if record is None and isinstance(pre_state, dict):
+            try:
+                record = recover_action_record(
+                    out, state_file=self.state_file, pre_state=pre_state, action_txid=txid,
+                    expected_action_hash=action_hash,
+                    expected_provenance_hash=provenance_hash, expected_amount=self.amount,
+                )
+                rec["recordSource"] = "verified-flat-emission"
+            except ActionRecordRecoveryError as exc:
+                # The transaction is already broadcast. Preserve that fact and make the missing
+                # bundle record explicit; never misreport this as a safe-to-retry failure.
+                rec["recordRecoveryError"] = str(exc)
         if record:
             rec["record"] = record
         return rec

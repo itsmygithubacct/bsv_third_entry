@@ -14,6 +14,7 @@ is kept import-light (no engine, no chain) so it unit-tests in isolation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -79,6 +80,218 @@ def run_agentd(cmd: str, env_extra: dict, *, chain_c_dir: Path | str | None = No
 _RECORD_KEYS = ("actionTxid", "receiptHashOnChain", "txCount", "lockTime", "amount",
                 "actionHash", "provenanceHash", "identity")
 _IDENTITY_KEYS = ("ricardianHash", "genesisTxid", "agentPubKey", "counterpartyPubKey")
+_ACTION_PLAN_RE = re.compile(
+    r"^action plan: txCount ([0-9]+) amount ([0-9]+) actionHash ([0-9a-fA-F]{64})$",
+    re.MULTILINE,
+)
+_SIGNED_RAW_TX_RE = re.compile(r"^signed raw tx: ([0-9a-fA-F]+)$", re.MULTILINE)
+
+
+class ActionRecordRecoveryError(ValueError):
+    """A legacy flattened action emission could not be proven equivalent to a full record."""
+
+
+def _hex_bytes(name: str, value: object, size: int) -> bytes:
+    try:
+        raw = bytes.fromhex(str(value))
+    except ValueError as exc:
+        raise ActionRecordRecoveryError(f"{name} is not hex") from exc
+    if len(raw) != size:
+        raise ActionRecordRecoveryError(f"{name} must be {size} bytes")
+    return raw
+
+
+def _compact_size(raw: bytes, offset: int) -> tuple[int, int]:
+    if offset >= len(raw):
+        raise ActionRecordRecoveryError("raw transaction is truncated")
+    first = raw[offset]
+    offset += 1
+    if first < 0xfd:
+        return first, offset
+    width = {0xfd: 2, 0xfe: 4, 0xff: 8}[first]
+    end = offset + width
+    if end > len(raw):
+        raise ActionRecordRecoveryError("raw transaction has a truncated CompactSize")
+    return int.from_bytes(raw[offset:end], "little"), end
+
+
+def _take(raw: bytes, offset: int, size: int) -> tuple[bytes, int]:
+    end = offset + size
+    if size < 0 or end > len(raw):
+        raise ActionRecordRecoveryError("raw transaction is truncated")
+    return raw[offset:end], end
+
+
+def _tx_inputs_outputs_locktime(raw_hex: str) -> tuple[list[dict], list[bytes], int]:
+    """Parse the legacy BSV transaction fields needed to authenticate an action record."""
+    try:
+        raw = bytes.fromhex(raw_hex)
+    except ValueError as exc:
+        raise ActionRecordRecoveryError("signed raw transaction is not hex") from exc
+    if len(raw) < 10:
+        raise ActionRecordRecoveryError("signed raw transaction is too short")
+    offset = 4  # version
+    n_inputs, offset = _compact_size(raw, offset)
+    inputs: list[dict] = []
+    for _ in range(n_inputs):
+        prev, offset = _take(raw, offset, 32)
+        vout_raw, offset = _take(raw, offset, 4)
+        script_len, offset = _compact_size(raw, offset)
+        _, offset = _take(raw, offset, script_len)
+        _, offset = _take(raw, offset, 4)  # sequence
+        inputs.append({"prevTxid": prev[::-1].hex(), "vout": int.from_bytes(vout_raw, "little")})
+    n_outputs, offset = _compact_size(raw, offset)
+    outputs: list[bytes] = []
+    for _ in range(n_outputs):
+        _, offset = _take(raw, offset, 8)  # satoshis
+        script_len, offset = _compact_size(raw, offset)
+        script, offset = _take(raw, offset, script_len)
+        outputs.append(script)
+    lock_raw, offset = _take(raw, offset, 4)
+    if offset != len(raw):
+        raise ActionRecordRecoveryError("raw transaction has trailing bytes")
+    return inputs, outputs, int.from_bytes(lock_raw, "little")
+
+
+def _op_return_items(script: bytes) -> list[bytes] | None:
+    offset = 1 if script.startswith(b"\x00") else 0
+    if offset >= len(script) or script[offset] != 0x6A:
+        return None
+    offset += 1
+    items: list[bytes] = []
+    while offset < len(script):
+        op = script[offset]
+        offset += 1
+        if op < 0x4C:
+            size = op
+        elif op == 0x4C:
+            size_raw, offset = _take(script, offset, 1)
+            size = size_raw[0]
+        elif op == 0x4D:
+            size_raw, offset = _take(script, offset, 2)
+            size = int.from_bytes(size_raw, "little")
+        elif op == 0x4E:
+            size_raw, offset = _take(script, offset, 4)
+            size = int.from_bytes(size_raw, "little")
+        else:
+            raise ActionRecordRecoveryError("OP_RETURN contains a non-push opcode")
+        item, offset = _take(script, offset, size)
+        items.append(item)
+    return items
+
+
+def _receipt_mark(*, identity: dict, amount: int, action_hash: str,
+                  provenance_hash: str, tx_count: int, lock_time: int) -> str:
+    for name, value, width in (("amount", amount, 8), ("txCount", tx_count, 8),
+                               ("lockTime", lock_time, 4)):
+        if value < 0 or value >= (1 << (width * 8 - 1)):
+            raise ActionRecordRecoveryError(f"{name} is outside the AgentTea encoding range")
+    preimage = (
+        _hex_bytes("ricardianHash", identity.get("ricardianHash"), 32)
+        + _hex_bytes("agentPubKey", identity.get("agentPubKey"), 33)
+        + _hex_bytes("counterpartyPubKey", identity.get("counterpartyPubKey"), 33)
+        + amount.to_bytes(8, "little")
+        + _hex_bytes("actionHash", action_hash, 32)
+        + _hex_bytes("provenanceHash", provenance_hash, 32)
+        + tx_count.to_bytes(8, "little")
+        + lock_time.to_bytes(4, "little")
+    )
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def recover_action_record(stdout: str, *, state_file: str | Path, pre_state: dict,
+                          action_txid: str, expected_action_hash: str,
+                          expected_provenance_hash: str, expected_amount: int) -> dict:
+    """Prove and recover a full action record from legacy chain_c's flattened live output.
+
+    Older ``agentd`` builds print an action plan, signed raw transaction and broadcast txid but no
+    final JSON object.  This transform is deliberately strict: it binds the pre/post state files to
+    input[0]/the new tip, recomputes the txid and AgentTea mark, and only then returns bundle inputs.
+    """
+    plans = _ACTION_PLAN_RE.findall(stdout)
+    raw_txs = _SIGNED_RAW_TX_RE.findall(stdout)
+    if len(plans) != 1 or len(raw_txs) != 1:
+        raise ActionRecordRecoveryError("expected exactly one action plan and one signed raw transaction")
+    tx_count_s, amount_s, action_hash = plans[0]
+    tx_count, amount = int(tx_count_s), int(amount_s)
+    action_hash = action_hash.lower()
+    provenance_hash = expected_provenance_hash.lower()
+    raw_tx = raw_txs[0].lower()
+    action_txid = action_txid.lower()
+    if action_hash != expected_action_hash.lower() or amount != int(expected_amount):
+        raise ActionRecordRecoveryError("action plan disagrees with the requested receipt or amount")
+    try:
+        raw = bytes.fromhex(raw_tx)
+    except ValueError as exc:
+        raise ActionRecordRecoveryError("signed raw transaction is not hex") from exc
+    computed_txid = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[::-1].hex()
+    if computed_txid != action_txid:
+        raise ActionRecordRecoveryError("signed raw transaction does not hash to the broadcast txid")
+
+    try:
+        post_state = json.loads(Path(state_file).read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ActionRecordRecoveryError("cannot read the post-action identity state") from exc
+    try:
+        pre_count = int(pre_state["state"]["txCount"])
+        post_count = int(post_state["state"]["txCount"])
+        pre_tip = pre_state["tip"]
+        post_tip = post_state["tip"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ActionRecordRecoveryError("identity state is missing its counter or tip") from exc
+    if tx_count != pre_count or post_count != pre_count + 1:
+        raise ActionRecordRecoveryError("persisted AgentTea counter is not the planned one-step transition")
+    if not isinstance(pre_tip, dict) or not isinstance(post_tip, dict):
+        raise ActionRecordRecoveryError("identity state tip must be an object")
+    if post_tip.get("txid") != action_txid or str(post_tip.get("rawTxHex", "")).lower() != raw_tx:
+        raise ActionRecordRecoveryError("post-action AgentTea tip does not match the signed transaction")
+
+    identity = {}
+    for key in _IDENTITY_KEYS:
+        before, after = pre_state.get(key), post_state.get(key)
+        if before != after:
+            raise ActionRecordRecoveryError(f"identity field {key} changed during executeAction")
+        identity[key] = after
+    _hex_bytes("ricardianHash", identity["ricardianHash"], 32)
+    _hex_bytes("genesisTxid", identity["genesisTxid"], 32)
+    _hex_bytes("agentPubKey", identity["agentPubKey"], 33)
+    _hex_bytes("counterpartyPubKey", identity["counterpartyPubKey"], 33)
+
+    inputs, outputs, lock_time = _tx_inputs_outputs_locktime(raw_tx)
+    try:
+        prior_vout = int(pre_tip.get("vout"))
+    except (TypeError, ValueError) as exc:
+        raise ActionRecordRecoveryError("prior AgentTea tip has no valid vout") from exc
+    if not inputs or inputs[0].get("prevTxid") != pre_tip.get("txid") \
+            or inputs[0].get("vout") != prior_vout:
+        raise ActionRecordRecoveryError("action input[0] does not spend the prior AgentTea tip")
+    anchors = [(vout, _op_return_items(script)) for vout, script in enumerate(outputs)]
+    anchors = [(vout, items) for vout, items in anchors if items is not None]
+    if len(anchors) != 1:
+        raise ActionRecordRecoveryError("action must contain exactly one OP_RETURN output")
+    receipt_vout, items = anchors[0]
+    data = [item.hex() for item in items if item]
+    if len(data) != 1 or len(data[0]) != 64:
+        raise ActionRecordRecoveryError("action OP_RETURN must contain one 32-byte AgentTea mark")
+    expected_mark = _receipt_mark(
+        identity=identity, amount=amount, action_hash=action_hash,
+        provenance_hash=provenance_hash, tx_count=tx_count, lock_time=lock_time,
+    )
+    if data[0] != expected_mark:
+        raise ActionRecordRecoveryError("action OP_RETURN does not match the recomputed AgentTea mark")
+    return {
+        "actionTxid": action_txid,
+        "receiptVout": receipt_vout,
+        "receiptHashOnChain": data[0],
+        "txCount": tx_count,
+        "lockTime": lock_time,
+        "amount": amount,
+        "actionHash": action_hash,
+        "provenanceHash": provenance_hash,
+        "identity": identity,
+        "rawTx": raw_tx,
+        "sizeBytes": len(raw),
+    }
 
 
 def parse_action_record(stdout: str) -> dict | None:
