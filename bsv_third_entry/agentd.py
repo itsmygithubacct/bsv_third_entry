@@ -397,10 +397,11 @@ class ChainCAgentd:
         rid = _validate_hash32("ricardian_hash", ricardian_hash)
         return self._run("deploy", {"RICARDIAN_HASH": rid})
 
-    def action(self, *, action_hash: str, provenance_hash: str = "00" * 32,
+    def action(self, *, action_hash: str, provenance_hash: str | None = None,
                amount: int = 1000) -> tuple[subprocess.CompletedProcess, dict | None]:
         """Run one metered action under the identity. action_hash = Bonsai receiptHash;
-        provenance_hash = Bonsai modelHash. Returns ``(proc, action_record-or-None)``."""
+        provenance_hash = Bonsai modelHash and is mandatory so a permanent action can never be
+        broadcast without a model binding. Returns ``(proc, action_record-or-None)``."""
         ah = _validate_hash32("action_hash", action_hash, required=True)
         ph = _validate_hash32("provenance_hash", provenance_hash, required=True)
         proc = self._run("action", {"ACTION_HASH": ah, "PROVENANCE_HASH": ph, "AMOUNT": str(amount)})

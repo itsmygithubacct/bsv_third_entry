@@ -52,7 +52,8 @@ def main(argv=None) -> int:
                     help="actually broadcast to mainnet (real BSV); omit for DRY-RUN")
     ap.add_argument("--ricardian-hash", default=None)
     ap.add_argument("--action-hash", default=None, help="the Bonsai receiptHash (required for 'action')")
-    ap.add_argument("--provenance-hash", default="00" * 32, help="the Bonsai modelHash")
+    ap.add_argument("--provenance-hash", default=None,
+                    help="the Bonsai modelHash (required for 'action')")
     ap.add_argument("--amount", type=int, default=1000)
     for kf in ("elder", "agent", "counterparty", "fund-deploy", "fund-action"):
         ap.add_argument(f"--{kf}-key-file", dest=kf.replace("-", "_") + "_key_file", default=None)
@@ -82,6 +83,8 @@ def main(argv=None) -> int:
         if args.command == "action":
             if not args.action_hash:
                 ap.error("'action' requires --action-hash (the Bonsai receiptHash)")
+            if not args.provenance_hash:
+                ap.error("'action' requires --provenance-hash (the Bonsai modelHash)")
             proc, record = agent.action(action_hash=args.action_hash,
                                         provenance_hash=args.provenance_hash, amount=args.amount)
             sys.stdout.write(proc.stdout)

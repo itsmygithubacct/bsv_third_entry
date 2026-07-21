@@ -19,7 +19,8 @@ identity **fails closed** (it does not silently broadcast).
 
 `receiptHash` / `modelHash` / `ricardianHash` are validated as 32-byte (64-hex) values **before** they
 are handed to the chain. A truncated or malformed hash raises rather than being anchored as a
-permanent, unverifiable commitment.
+permanent, unverifiable commitment. Direct AgentTea actions require both `--action-hash` and
+`--provenance-hash`; there is no implicit all-zero model identity.
 
 ## Secrets
 

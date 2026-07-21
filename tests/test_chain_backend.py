@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from bsv_third_entry import _parse, agentd, paths  # noqa: E402
+from bsv_third_entry import _parse, agent_cli, agentd, paths  # noqa: E402
 from bsv_third_entry.chain_backends import ChainCBroadcastError, ChainCThirdEntryBackend  # noqa: E402
 
 SAMPLE_DRYRUN = """\
@@ -78,6 +78,22 @@ def test_hashes_reject_bad():
         be._hashes({"receiptHash": "deadbeef"})
     with pytest.raises(ChainCBroadcastError):
         be._hashes({})
+
+
+def test_direct_agent_action_requires_model_provenance(tmp_path):
+    agent = agentd.ChainCAgentd(state_file=tmp_path / "identity.json")
+    with pytest.raises(agentd.AgentdError, match="provenance_hash is required"):
+        agent.action(action_hash=R_HASH)
+
+
+def test_agent_cli_requires_provenance_hash_for_action(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        agent_cli.main([
+            "action", "--state-file", str(tmp_path / "identity.json"),
+            "--action-hash", R_HASH,
+        ])
+    assert exc.value.code == 2
+    assert "requires --provenance-hash" in capsys.readouterr().err
 
 
 def test_oneshot_env_gate():
