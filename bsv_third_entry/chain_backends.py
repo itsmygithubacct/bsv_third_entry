@@ -22,8 +22,8 @@ binary's own ``CONFIRM_MAINNET_BROADCAST=yes`` (this backend sets the latter onl
 
 Receipt→chain binding:
   * ``ACTION_HASH``     = the Bonsai ``receiptHash``
-  * ``PROVENANCE_HASH`` = the Bonsai ``modelHash`` (explicit ``provenanceHash`` wins; else falls back
-                          to the ``receiptHash`` if the artifact carries no modelHash)
+  * ``PROVENANCE_HASH`` = the Bonsai ``modelHash``. The model hash is mandatory and nonzero; an
+                          explicit ``provenanceHash`` must equal it.
 """
 from __future__ import annotations
 
@@ -117,8 +117,17 @@ class ChainCThirdEntryBackend:
         if not receipt_hash:
             raise ChainCBroadcastError("chain artifact has no receiptHash to anchor")
         action_hash = _require_hash32("receiptHash", receipt_hash)
-        provenance = artifact.get("provenanceHash") or artifact.get("modelHash") or receipt_hash
-        return action_hash, _require_hash32("provenanceHash", provenance)
+        model_hash = artifact.get("modelHash")
+        if not model_hash:
+            raise ChainCBroadcastError("chain artifact has no modelHash to bind as provenance")
+        model_hash = _require_hash32("modelHash", model_hash)
+        if model_hash == "0" * 64:
+            raise ChainCBroadcastError("modelHash must bind a real model artifact; all-zero is not allowed")
+        if artifact.get("provenanceHash") is not None:
+            provenance = _require_hash32("provenanceHash", artifact["provenanceHash"])
+            if provenance != model_hash:
+                raise ChainCBroadcastError("provenanceHash does not match the receipt modelHash")
+        return action_hash, model_hash
 
     # -- the WalletThirdEntryBackend contract -----------------------------------------------
     def broadcast(self, artifact: dict, *, ts: str | None = None) -> dict:

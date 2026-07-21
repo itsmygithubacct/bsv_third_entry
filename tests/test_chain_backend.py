@@ -68,8 +68,8 @@ def test_hashes_bind_receipt_and_model():
     be = ChainCThirdEntryBackend()
     a, p = be._hashes({"receiptHash": R_HASH, "modelHash": M_HASH})
     assert (a, p) == (R_HASH, M_HASH)                 # actionHash=receiptHash, provenanceHash=modelHash
-    a, p = be._hashes({"receiptHash": R_HASH})
-    assert p == R_HASH                                  # no modelHash → falls back to receiptHash
+    a, p = be._hashes({"receiptHash": R_HASH, "modelHash": M_HASH, "provenanceHash": M_HASH})
+    assert (a, p) == (R_HASH, M_HASH)
 
 
 def test_hashes_reject_bad():
@@ -78,12 +78,20 @@ def test_hashes_reject_bad():
         be._hashes({"receiptHash": "deadbeef"})
     with pytest.raises(ChainCBroadcastError):
         be._hashes({})
+    with pytest.raises(ChainCBroadcastError, match="no modelHash"):
+        be._hashes({"receiptHash": R_HASH})
+    with pytest.raises(ChainCBroadcastError, match="all-zero"):
+        be._hashes({"receiptHash": R_HASH, "modelHash": "0" * 64})
+    with pytest.raises(ChainCBroadcastError, match="does not match"):
+        be._hashes({"receiptHash": R_HASH, "modelHash": M_HASH, "provenanceHash": "ef" * 32})
 
 
 def test_direct_agent_action_requires_model_provenance(tmp_path):
     agent = agentd.ChainCAgentd(state_file=tmp_path / "identity.json")
     with pytest.raises(agentd.AgentdError, match="provenance_hash is required"):
         agent.action(action_hash=R_HASH)
+    with pytest.raises(agentd.AgentdError, match="all-zero"):
+        agent.action(action_hash=R_HASH, provenance_hash="0" * 64)
 
 
 def test_agent_cli_requires_provenance_hash_for_action(tmp_path, capsys):
@@ -101,7 +109,9 @@ def test_oneshot_env_gate():
     env = be._oneshot_env({"receiptHash": R_HASH, "modelHash": M_HASH})
     assert env["ACTION_HASH"] == R_HASH and env["PROVENANCE_HASH"] == M_HASH
     assert "CONFIRM_MAINNET_BROADCAST" not in env
-    env2 = ChainCThirdEntryBackend(confirm=True, mode="oneshot")._oneshot_env({"receiptHash": R_HASH})
+    env2 = ChainCThirdEntryBackend(confirm=True, mode="oneshot")._oneshot_env(
+        {"receiptHash": R_HASH, "modelHash": M_HASH}
+    )
     assert env2["CONFIRM_MAINNET_BROADCAST"] == "yes"
 
 
@@ -115,7 +125,7 @@ def test_accepts_wallet_backend_kwargs():
 
 def test_resumable_absent_identity_dryruns_clean(tmp_path):
     be = ChainCThirdEntryBackend(confirm=False, state_file=tmp_path / "nope.json")
-    out = be.broadcast({"receiptHash": R_HASH})
+    out = be.broadcast({"receiptHash": R_HASH, "modelHash": M_HASH})
     assert out["status"] == "dry-run" and out["broadcast"] is False
     assert out["identity"] == "absent"
     assert "deploy" in out["reason"].lower()
@@ -124,7 +134,7 @@ def test_resumable_absent_identity_dryruns_clean(tmp_path):
 def test_resumable_absent_identity_confirm_fails_closed(tmp_path):
     be = ChainCThirdEntryBackend(confirm=True, state_file=tmp_path / "nope.json")
     with pytest.raises(ChainCBroadcastError):       # never silently broadcasts without an identity
-        be.broadcast({"receiptHash": R_HASH})
+        be.broadcast({"receiptHash": R_HASH, "modelHash": M_HASH})
 
 
 # --- agentd record transform -----------------------------------------------------------------

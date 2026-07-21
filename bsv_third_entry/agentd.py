@@ -404,6 +404,8 @@ class ChainCAgentd:
         broadcast without a model binding. Returns ``(proc, action_record-or-None)``."""
         ah = _validate_hash32("action_hash", action_hash, required=True)
         ph = _validate_hash32("provenance_hash", provenance_hash, required=True)
+        if ph == "0" * 64:
+            raise AgentdError("provenance_hash must bind a real modelHash; all-zero is not allowed")
         proc = self._run("action", {"ACTION_HASH": ah, "PROVENANCE_HASH": ph, "AMOUNT": str(amount)})
         return proc, parse_action_record(proc.stdout)
 

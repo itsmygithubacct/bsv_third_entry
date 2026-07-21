@@ -8,7 +8,7 @@ identity once (``bsv-agent deploy --confirm``); thereafter each Third Entry is a
 transition. Use ``--oneshot`` for the self-contained ``bonsai_third_entry`` lifecycle (no persisted
 identity, ephemeral keys).
 
-  bsv-third-entry --receipt-hash <64hex> [--model-hash <64hex>]      # resumable, DRY-RUN
+  bsv-third-entry --receipt-hash <64hex> --model-hash <64hex>        # resumable, DRY-RUN
   bsv-third-entry --artifact chain-artifact.json --confirm           # real broadcast (spends BSV)
   bsv-third-entry --oneshot --artifact chain-artifact.json           # one-shot lifecycle, DRY-RUN
 """
@@ -35,7 +35,7 @@ def main(argv=None) -> int:
     ap.add_argument("--artifact", help="path to a chain-artifact JSON (with receiptHash/modelHash)")
     ap.add_argument("--receipt-hash", help="the Bonsai receiptHash (32-byte hex) → ACTION_HASH")
     ap.add_argument("--model-hash", help="the Bonsai modelHash (32-byte hex) → PROVENANCE_HASH")
-    ap.add_argument("--provenance-hash", help="override PROVENANCE_HASH explicitly")
+    ap.add_argument("--provenance-hash", help="assert PROVENANCE_HASH explicitly (must equal modelHash)")
     ap.add_argument("--ricardian-hash", help="override RICARDIAN_HASH (else chain_c's charter default)")
     ap.add_argument("--confirm", action="store_true",
                     help="actually broadcast to mainnet (real BSV); omit for DRY-RUN")
